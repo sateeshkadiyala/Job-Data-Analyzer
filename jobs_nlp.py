@@ -1,0 +1,170 @@
+from bs4 import BeautifulSoup # For HTML parsing
+import urllib2 # Website connections
+import re # Regular expressions
+from time import sleep # To prevent overwhelming the server between connections
+from collections import Counter # Keep track of our term counts
+from nltk.corpus import stopwords # Filter out stopwords, such as 'the', 'or', 'and'
+import pandas as pd # For converting results to a dataframe and bar chart plots
+import matplotlib.pyplot as plt
+import nltk
+import subject_extraction
+import trigram_tagger
+
+
+def text_cleaner(website):
+    '''
+    This function just cleans up the raw html so that I can look at it.
+    Inputs: a URL to investigate
+    Outputs: Cleaned text only
+    '''
+    try:
+        site = urllib2.urlopen(website).read()  # Connect to the job posting
+    except:
+        return  # Need this in case the website isn't there anymore or some other weird connection problem
+
+    soup_obj = BeautifulSoup(site)  # Get the html from the site
+
+    for script in soup_obj(["script", "style"]):
+        script.extract()  # Remove these two elements from the BS4 object
+
+    text = soup_obj.get_text()  # Get the text from this
+
+    lines = (line.strip() for line in text.splitlines())  # break into lines
+
+    chunks = (phrase.strip() for line in lines for phrase in line.split("  "))  # break multi-headlines into a line each
+
+    def chunk_space(chunk):
+        chunk_out = chunk + ' '  # Need to fix spacing issue
+        return chunk_out
+
+    text = ''.join(chunk_space(chunk) for chunk in chunks if chunk).encode(
+        'utf-8')  # Get rid of all blank lines and ends of line
+
+    # Now clean out all of the unicode junk (this line works great!!!)
+
+    try:
+        text = text.decode('unicode_escape').encode('ascii', 'ignore')  # Need this as some websites aren't formatted
+    except:  # in a way that this works, can occasionally throw
+        return  # an exception
+
+    text = re.sub("[^a-zA-Z.+3]", " ", text)  # Now get rid of any terms that aren't words (include 3 for d3.js)
+    # Also include + for C++
+
+
+    text = text.lower().split()  # Go to lower case and split them apart
+
+    stop_words = set(stopwords.words("english"))  # Filter out any stop words
+    text = [w for w in text if not w in stop_words]
+
+    text = list(set(text))  # Last, just get the set of these. Ignore counts (we are just looking at whether a term existed
+    # or not on the website)
+
+    return ' '.join(text)
+
+
+def skills_info(city=None, state=None):
+    '''
+    This function will take a desired city/state and look for all new job postings
+    on Indeed.com. It will crawl all of the job postings and keep track of how many
+    use a preset list of typical data science skills. The final percentage for each skill
+    is then displayed at the end of the collation. 
+
+    Inputs: The location's city and state. These are optional. If no city/state is input, 
+    the function will assume a national search (this can take a while!!!).
+    Input the city/state as strings, such as skills_info('Chicago', 'IL').
+    Use a two letter abbreviation for the state.
+
+    Output: A bar chart showing the most commonly desired skills in the job market for 
+    a data scientist. 
+    '''
+
+    final_job = 'mahchine+learning'  # searching for data scientist exact fit("data scientist" on Indeed search)
+
+    # Make sure the city specified works properly if it has more than one word (such as San Francisco)
+    if city is not None:
+        final_city = city.split()
+        final_city = '+'.join(word for word in final_city)
+        final_site_list = ['http://www.indeed.com/jobs?q=%22', final_job, '%22&l=', final_city,
+                           '%2C+', state]  # Join all of our strings together so that indeed will search correctly
+    else:
+        final_site_list = ['http://www.indeed.com/jobs?q="', final_job, '"']
+
+    final_site = ''.join(final_site_list)  # Merge the html address together into one string
+
+    base_url = 'http://www.indeed.com'
+
+    try:
+        html = urllib2.urlopen(final_site).read()  # Open up the front page of our search first
+    except:
+        'That city/state combination did not have any jobs. Exiting . . .'  # In case the city is invalid
+        return
+    soup = BeautifulSoup(html)  # Get the html from the first page
+
+    # Now find out how many jobs there were
+
+    num_jobs_area = soup.find(id='searchCount').string.encode('utf-8')  # Now extract the total number of jobs found
+    # The 'searchCount' object has this
+
+    job_numbers = re.findall('\d+', num_jobs_area)  # Extract the total jobs found from the search result
+
+    if len(job_numbers) > 3:  # Have a total number of jobs greater than 1000
+        total_num_jobs = (int(job_numbers[2]) * 1000) + int(job_numbers[3])
+    else:
+        total_num_jobs = int(job_numbers[2])
+
+    city_title = city
+    if city is None:
+        city_title = 'Nationwide'
+
+    print
+    'There were', total_num_jobs, 'jobs found,', city_title  # Display how many jobs were found
+
+    num_pages = total_num_jobs / 10  # This will be how we know the number of times we need to iterate over each new
+    # search result page
+    job_descriptions = []  # Store all our descriptions in this list
+
+    for i in xrange(1, num_pages + 1):  # Loop through all of our search result pages
+        print
+        'Getting page', i
+        start_num = str(i * 10)  # Assign the multiplier of 10 to view the pages we want
+        current_page = ''.join([final_site, '&start=', start_num])
+        # Now that we can view the correct 10 job returns, start collecting the text samples from each
+
+        html_page = urllib2.urlopen(current_page).read()  # Get the page
+
+        page_obj = BeautifulSoup(html_page)  # Locate all of the job links
+        job_link_area = page_obj.find(id='resultsCol')  # The center column on the page where the job postings exist
+
+        job_URLS = [base_url + link.get('href') for link in job_link_area.find_all('a') if link.get('href') != None]  # Get the URLS for the jobs
+
+        job_URLS = filter(lambda x: 'clk' in x, job_URLS)  # Now get just the job related URLS
+
+        for j in xrange(0, len(job_URLS)):
+            final_description = text_cleaner(job_URLS[j])
+            if final_description:  # So that we only append when the website was accessed correctly
+                job_descriptions.append(final_description)
+            sleep(1)  # So that we don't be jerks. If you have a very fast internet connection you could hit the server a lot!
+
+    print
+    'Done with collecting the job postings!'
+    print
+    'There were', len(job_descriptions), 'jobs successfully found.'
+
+    all_descriptions = ""
+
+    all_descriptions = ' '.join(job_descriptions)
+
+    text_file = open("job_descriptions_austin.txt", "a")
+
+    text_file.write(all_descriptions)
+
+    text_file.close()
+
+    #all_words = [word for word, pos in nltk.pos_tag(nltk.word_tokenize(all_descriptions)) if pos == 'NN' or pos == 'JJ']
+
+    #fdist = nltk.FreqDist(all_words)
+
+    #print fdist.most_common(10)
+
+
+skills_info(city = 'Austin', state = 'TX')
